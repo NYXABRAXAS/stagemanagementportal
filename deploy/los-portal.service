@@ -1,0 +1,27 @@
+# systemd unit for the LOS Stage Management Portal (Linux office server)
+# Install:
+#   sudo cp deploy/los-portal.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now los-portal
+# Logs:  journalctl -u los-portal -f
+
+[Unit]
+Description=ProHorizon LOS Stage Management Portal
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=losportal
+WorkingDirectory=/opt/los-portal/server
+Environment=NODE_ENV=production
+# All other settings (DATABASE_URL, JWT_SECRET, API_PORT, COOKIE_SECURE) come from /opt/los-portal/server/.env
+ExecStart=/usr/bin/node dist/server/src/index.js
+Restart=always
+RestartSec=5
+# hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

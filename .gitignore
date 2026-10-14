@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Reference material (confidential manual + screenshots containing KYC imagery)
+reference/
+*.zip
+*.docx
+
+# Local database dumps / backups
+backups/
+*.dump
+*.sql.gz
+
+# Test output
+test-results/
+playwright-report/
+coverage/
+
+# Logs & OS
+logs/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/

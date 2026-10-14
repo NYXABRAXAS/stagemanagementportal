@@ -1,0 +1,373 @@
+// ProHorizon — LOS Stage Management Portal
+// Configuration hierarchy: Product → ConfigVersion → Stage → SubStage → Module → Field
+// Every configurable item belongs to exactly one ConfigVersion, which belongs to exactly
+// one Product. That is what keeps product configurations independent, and what lets a
+// published version stay frozen while a new draft is edited.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Security ───────────────────────────
+
+model User {
+  id           String     @id @default(cuid())
+  username     String     @unique
+  fullName     String
+  email        String?
+  passwordHash String
+  active       Boolean    @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  roles        UserRole[]
+}
+
+/// roleType PORTAL = users of this configuration portal; LOS = business roles of the
+/// loan journey (used for workflow routing, field visibility and preview-as-role).
+model Role {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  description String?
+  roleType    String           @default("LOS")
+  platform    String?
+  isSystem    Boolean          @default(false)
+  active      Boolean          @default(true)
+  sourceRef   String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  module      String
+  description String?
+  roles       RolePermission[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+// ─────────────────────────── Catalogue ───────────────────────────
+
+model Product {
+  id          String          @id @default(cuid())
+  code        String          @unique
+  name        String
+  category    String?
+  description String?
+  active      Boolean         @default(true)
+  sortOrder   Int             @default(0)
+  sourceNote  String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  schemes     Scheme[]
+  versions    ConfigVersion[]
+}
+
+model Scheme {
+  id          String   @id @default(cuid())
+  productId   String
+  code        String
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  needsConfirmation Boolean @default(false)
+  sourceRef   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, code])
+}
+
+// ─────────────────────────── Versioning ───────────────────────────
+
+/// status: DRAFT → SUBMITTED → APPROVED → PUBLISHED → ARCHIVED (superseded).
+/// Only DRAFT versions can be edited; the API rejects writes to any other status.
+model ConfigVersion {
+  id              String    @id @default(cuid())
+  productId       String
+  versionNo       Int
+  status          String    @default("DRAFT")
+  title           String?
+  notes           String?
+  basedOnVersionId String?
+  createdById     String?
+  createdByName   String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lastModifiedByName String?
+  submittedByName String?
+  submittedAt     DateTime?
+  approvedByName  String?
+  approvedAt      DateTime?
+  publishedByName String?
+  publishedAt     DateTime?
+  rejectionNote   String?
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  stages          Stage[]
+  documents       DocumentRequirement[]
+  transitions     WorkflowTransition[]
+
+  @@unique([productId, versionNo])
+  @@index([productId, status])
+}
+
+// ─────────────────────────── Hierarchy ───────────────────────────
+
+model Stage {
+  id                String     @id @default(cuid())
+  versionId         String
+  key               String
+  name              String
+  description       String?
+  platform          String?
+  sequence          Int        @default(0)
+  active            Boolean    @default(true)
+  needsConfirmation Boolean    @default(false)
+  sourceRef         String?
+  version           ConfigVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  subStages         SubStage[]
+
+  @@unique([versionId, key])
+  @@index([versionId, sequence])
+}
+
+model SubStage {
+  id                String   @id @default(cuid())
+  stageId           String
+  key               String
+  name              String
+  description       String?
+  platform          String?
+  primaryRoleCode   String?
+  sequence          Int      @default(0)
+  active            Boolean  @default(true)
+  needsConfirmation Boolean  @default(false)
+  sourceRef         String?
+  stage             Stage    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  modules           Module[]
+  fields            Field[]
+  documents         DocumentRequirement[]
+  transitionsFrom   WorkflowTransition[] @relation("TransitionFrom")
+  transitionsTo     WorkflowTransition[] @relation("TransitionTo")
+
+  @@index([stageId, sequence])
+}
+
+/// Module = a section / tab inside a sub-stage (e.g. Application Form → Personal Details).
+/// repeatable = the section captures a list of records (e.g. FVR Land Holding "+ Add Land").
+model Module {
+  id                String   @id @default(cuid())
+  subStageId        String
+  key               String
+  name              String
+  description       String?
+  repeatable        Boolean  @default(false)
+  sequence          Int      @default(0)
+  active            Boolean  @default(true)
+  needsConfirmation Boolean  @default(false)
+  sourceRef         String?
+  subStage          SubStage @relation(fields: [subStageId], references: [id], onDelete: Cascade)
+  fields            Field[]
+
+  @@index([subStageId, sequence])
+}
+
+/// Reusable field definition library (optional). A configured Field may be created
+/// from a definition, but always carries its own copy of every property.
+model FieldDefinition {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  label       String
+  type        String
+  description String?
+  defaults    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// A configured field inside a sub-stage (moduleId null = directly on the sub-stage).
+/// requirement: MANDATORY | OPTIONAL | CONDITIONAL (requiredness decided by a REQUIRED rule).
+model Field {
+  id                String        @id @default(cuid())
+  subStageId        String
+  moduleId          String?
+  definitionId      String?
+  key               String
+  label             String
+  type              String
+  helpText          String?
+  placeholder       String?
+  requirement       String        @default("OPTIONAL")
+  defaultValue      String?
+  minValue          Float?
+  maxValue          Float?
+  minLength         Int?
+  maxLength         Int?
+  pattern           String?
+  patternMessage    String?
+  format            String?
+  dateMin           String?
+  dateMax           String?
+  readOnly          Boolean       @default(false)
+  formula           String?
+  sequence          Int           @default(0)
+  active            Boolean       @default(true)
+  sensitive         Boolean       @default(false)
+  maskingRule       String?
+  dataMapping       String?
+  schemeCodes       String[]      @default([])
+  visibleRoleCodes  String[]      @default([])
+  editableRoleCodes String[]      @default([])
+  needsConfirmation Boolean       @default(false)
+  sourceRef         String?
+  notes             String?
+  subStage          SubStage      @relation(fields: [subStageId], references: [id], onDelete: Cascade)
+  module            Module?       @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  options           FieldOption[]
+  rules             FieldRule[]
+
+  @@index([subStageId, moduleId, sequence])
+}
+
+model FieldOption {
+  id       String  @id @default(cuid())
+  fieldId  String
+  value    String
+  label    String
+  sequence Int     @default(0)
+  active   Boolean @default(true)
+  field    Field   @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@index([fieldId, sequence])
+}
+
+/// ruleType: VISIBILITY | REQUIRED | VALIDATION
+/// conditions: [{ "fieldKey": "customerType", "operator": "EQUALS", "value": "Individual" }]
+model FieldRule {
+  id         String  @id @default(cuid())
+  fieldId    String
+  ruleType   String
+  logic      String  @default("ALL")
+  conditions Json
+  expression String?
+  message    String?
+  active     Boolean @default(true)
+  field      Field   @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────── Documents & Workflow ───────────────────────────
+
+model DocumentRequirement {
+  id                String   @id @default(cuid())
+  versionId         String
+  subStageId        String?
+  code              String
+  name              String
+  category          String?
+  requirement       String   @default("MANDATORY")
+  captureMode       String   @default("CAMERA_OR_UPLOAD")
+  allowedTypes      String?
+  maxSizeMb         Float?
+  minCount          Int      @default(1)
+  maxCount          Int?
+  schemeCodes       String[] @default([])
+  validatedByRoleCodes String[] @default([])
+  sequence          Int      @default(0)
+  active            Boolean  @default(true)
+  needsConfirmation Boolean  @default(false)
+  sourceRef         String?
+  notes             String?
+  version           ConfigVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  subStage          SubStage?     @relation(fields: [subStageId], references: [id], onDelete: SetNull)
+
+  @@index([versionId, subStageId])
+}
+
+/// A routing rule. Routing is deliberately separate from display order (Stage.sequence).
+/// outcome: SUBMIT | APPROVE | REJECT | RETURN | QUERY | HOLD | AUTO
+model WorkflowTransition {
+  id                 String   @id @default(cuid())
+  versionId          String
+  fromSubStageId     String
+  toSubStageId       String?
+  actionCode         String
+  actionLabel        String
+  outcome            String
+  resultingStatus    String?
+  conditionLogic     String   @default("ALL")
+  conditions         Json     @default("[]")
+  allowedRoleCodes   String[] @default([])
+  remarksRequired    Boolean  @default(false)
+  requireAllMandatoryFields Boolean @default(false)
+  requiredFieldKeys  String[] @default([])
+  requiredDocCodes   String[] @default([])
+  exceptionHandling  String?
+  isTerminal         Boolean  @default(false)
+  sequence           Int      @default(0)
+  active             Boolean  @default(true)
+  needsConfirmation  Boolean  @default(false)
+  sourceRef          String?
+  version            ConfigVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  fromSubStage       SubStage  @relation("TransitionFrom", fields: [fromSubStageId], references: [id], onDelete: Cascade)
+  toSubStage         SubStage? @relation("TransitionTo", fields: [toSubStageId], references: [id], onDelete: SetNull)
+
+  @@index([versionId, fromSubStageId])
+}
+
+// ─────────────────────────── Audit & Settings ───────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  at         DateTime @default(now())
+  userId     String?
+  username   String?
+  action     String
+  entityType String
+  entityId   String?
+  productId  String?
+  versionId  String?
+  summary    String
+  before     Json?
+  after      Json?
+  ip         String?
+
+  @@index([at])
+  @@index([entityType, entityId])
+  @@index([productId])
+}
+
+model SystemSetting {
+  key         String   @id
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}
